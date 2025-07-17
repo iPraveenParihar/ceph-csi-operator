@@ -366,6 +366,11 @@ var NodePluginCsiAddonsContainerPort = corev1.ContainerPort{
 	ContainerPort: int32(9071),
 }
 
+// CSI snapshot-metadata sidecar container port definitions
+var snapshotMetadataGRPCPort = corev1.ContainerPort{
+	ContainerPort: int32(50051),
+}
+
 func ContainerPortArg(port corev1.ContainerPort) string {
 
 	return fmt.Sprintf("--controller-port=%d", port.ContainerPort)
@@ -400,6 +405,7 @@ var EnableVolumeGroupSnapshotsContainerArg = "--feature-gates=CSIVolumeGroupSnap
 var ForceCephKernelClientContainerArg = "--forcecephkernelclient=true"
 var LogToStdErrContainerArg = "--logtostderr=false"
 var AlsoLogToStdErrContainerArg = "--alsologtostderr=true"
+var SnapshotMetadataGRPCServicePortArg = fmt.Sprintf("--port=%d", snapshotMetadataGRPCPort.ContainerPort)
 
 func LogVerbosityContainerArg(level int) string {
 	return fmt.Sprintf("--v=%d", Clamp(level, 0, 5))
@@ -414,6 +420,12 @@ func TypeContainerArg(t string) string {
 	default:
 		return ""
 	}
+}
+func SnapshotMetadataTLSCertArg(mountPath string) string {
+	return fmt.Sprintf("--tls-cert=%s/tls.crt", mountPath)
+}
+func SnapshotMetadataTLSKeyArg(mountPath string) string {
+	return fmt.Sprintf("--tls-key=%s/tls.key", mountPath)
 }
 func SetMetadataContainerArg(on bool) string {
 	return If(on, "--setmetadata=true", "")

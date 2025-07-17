@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	sm "github.com/kubernetes-csi/external-snapshot-metadata/client/apis/snapshotmetadataservice/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -60,6 +61,7 @@ import (
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="cbt.storage.k8s.io",resources=snapshotmetadataservices,verbs=get;list;
 
 type DriverType string
 
@@ -221,6 +223,27 @@ func (r *DriverReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		log.Info("CSI Driver reconciliation completed successfully")
 	}
 	return ctrl.Result{}, err
+}
+
+func (r *driverReconcile) hasSnapshotMetadataService() bool {
+	sms := &sm.SnapshotMetadataService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: r.driver.Name,
+		},
+	}
+	err := r.Get(r.ctx, client.ObjectKeyFromObject(sms), sms)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			r.log.Info("SnapshotMetadataService CR does not exist", "name", sms.Name)
+			return false
+		}
+		r.log.Error(err, "Failed to get SnapshotMetadataService resource")
+
+		return false
+	}
+
+	r.log.Info("SnapshotMetadataService CR exists", "name", sms.Name)
+	return true
 }
 
 func (r *driverReconcile) reconcile() error {
@@ -911,6 +934,49 @@ func (r *driverReconcile) reconcileControllerPluginDeployment() error {
 								},
 							})
 						}
+						if r.isRdbDriver() && r.hasSnapshotMetadataService() {
+							// Find the TLS volume mount path for certificates
+							var tlsVolumeMount corev1.VolumeMount
+							var foundTLSVolume bool
+							for _, v := range pluginSpec.Volumes {
+								if v.Volume.Secret.SecretName == r.driver.Name {
+									tlsVolumeMount = v.Mount
+									foundTLSVolume = true
+									break
+								}
+							}
+							if foundTLSVolume {
+								containers = append(containers, corev1.Container{
+									Name:            "csi-snapshot-metadata",
+									ImagePullPolicy: imagePullPolicy,
+									Image:           r.images["snapshot-metadata"],
+									Args: utils.DeleteZeroValues(
+										[]string{
+											utils.LogVerbosityContainerArg(logVerbosity),
+											utils.TimeoutContainerArg(grpcTimeout),
+											utils.SnapshotMetadataGRPCServicePortArg,
+											utils.CsiAddressContainerArg,
+											utils.SnapshotMetadataTLSCertArg(tlsVolumeMount.MountPath),
+											utils.SnapshotMetadataTLSKeyArg(tlsVolumeMount.MountPath),
+										},
+									),
+									VolumeMounts: utils.Call(func() []corev1.VolumeMount {
+										mounts := append(
+											// Add user defined volume mounts at the start to make sure they do not
+											// overwrite built in volumes mounts.
+											utils.MapSlice(
+												pluginSpec.Volumes,
+												func(v csiv1.VolumeSpec) corev1.VolumeMount {
+													return v.Mount
+												},
+											),
+											utils.SocketDirVolumeMount,
+										)
+										return mounts
+									}),
+								})
+							}
+						}
 						return containers
 					}),
 					Volumes: utils.Call(func() []corev1.Volume {
@@ -958,17 +1024,14 @@ func (r *driverReconcile) reconcileControllerPluginDeployment() error {
 }
 
 func (r *driverReconcile) controllerPluginCsiAddonsContainerPort() corev1.ContainerPort {
-
 	// the cephFS and rbd drivers need to use different ports
 	// to avoid port collisions with host network.
 	port := utils.ControllerPluginCsiAddonsContainerRbdPort
 	if r.isCephFsDriver() {
 		port = utils.ControllerPluginCsiAddonsContainerCephFsPort
-
 	}
 
 	return port
-
 }
 
 func (r *driverReconcile) reconcileNodePluginDeamonSet() error {
